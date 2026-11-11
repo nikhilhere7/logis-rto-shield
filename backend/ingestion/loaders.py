@@ -4,7 +4,16 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core.models import Courier, Customer, Order, Shipment
+from core.models import (
+    CodRemittance,
+    Courier,
+    Customer,
+    InvoiceLine,
+    Order,
+    PincodeZone,
+    RateCard,
+    Shipment,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 BATCH = 2000
@@ -90,4 +99,176 @@ def load_shipments(df, merchant):
     return {"created": created, "updated": len(df) - created}
 
 
-LOADERS = {"orders": load_orders, "shipments": load_shipments}
+def _upsert(model, objs, merchant, unique, update):
+    before = model.objects.for_merchant(merchant).count()
+
+    model.objects.bulk_create(
+        objs,
+        batch_size=BATCH,
+        update_conflicts=True,
+        unique_fields=["merchant"] + unique,
+        update_fields=update,
+    )
+
+    created = model.objects.for_merchant(merchant).count() - before
+
+    return {
+        "created": created,
+        "updated": len(objs) - created,
+    }
+
+
+def load_pincode_zones(df, merchant):
+    objs = [
+        PincodeZone(
+            merchant=merchant,
+            pincode=r.pincode,
+            zone=r.zone,
+            city=text(r.city),
+            state=text(r.state),
+            city_tier=int(r.city_tier),
+            cod_serviceable=bool(r.cod_serviceable),
+        )
+        for r in df.itertuples()
+    ]
+
+    return _upsert(
+        PincodeZone,
+        objs,
+        merchant,
+        ["pincode"],
+        ["zone", "city", "state", "city_tier", "cod_serviceable"],
+    )
+
+
+def load_rate_card(df, merchant):
+    courier = _courier_ids(df.courier.unique(), merchant)
+
+    objs = [
+        RateCard(
+            merchant=merchant,
+            courier_id=courier[r.courier],
+            zone=r.zone,
+            first_500g_inr=money(r.first_500g_inr),
+            addl_500g_inr=money(r.addl_500g_inr),
+            cod_fee_pct=money(r.cod_fee_pct),
+            cod_min_inr=money(r.cod_min_inr),
+            rto_charge_pct_of_freight=money(r.rto_charge_pct_of_freight),
+        )
+        for r in df.itertuples()
+    ]
+
+    return _upsert(
+        RateCard,
+        objs,
+        merchant,
+        ["courier", "zone"],
+        [
+            "first_500g_inr",
+            "addl_500g_inr",
+            "cod_fee_pct",
+            "cod_min_inr",
+            "rto_charge_pct_of_freight",
+        ],
+    )
+
+
+def load_invoices(df, merchant):
+    courier = _courier_ids(df.courier.unique(), merchant)
+
+    shipment = dict(
+        Shipment.objects.for_merchant(merchant).values_list("awb_number", "id")
+    )
+
+    objs = [
+        InvoiceLine(
+            merchant=merchant,
+            line_ref=r.line_ref,
+            invoice_id=r.invoice_id,
+            invoice_date=day(r.invoice_date),
+            courier_id=courier[r.courier],
+            awb_number=r.awb_number,
+            shipment_id=shipment.get(r.awb_number),
+            billed_weight_g=int(round(r.billed_weight_g)),
+            billed_zone=r.billed_zone,
+            forward_freight_inr=money(r.forward_freight_inr),
+            cod_charge_inr=money(r.cod_charge_inr),
+            rto_freight_inr=money(r.rto_freight_inr),
+            gst_inr=money(r.gst_inr),
+            total_billed_inr=money(r.total_billed_inr),
+        )
+        for r in df.itertuples()
+    ]
+
+    out = _upsert(
+        InvoiceLine,
+        objs,
+        merchant,
+        ["line_ref"],
+        [
+            "invoice_id",
+            "invoice_date",
+            "courier",
+            "awb_number",
+            "shipment",
+            "billed_weight_g",
+            "billed_zone",
+            "forward_freight_inr",
+            "cod_charge_inr",
+            "rto_freight_inr",
+            "gst_inr",
+            "total_billed_inr",
+        ],
+    )
+
+    out["linked_to_shipment"] = int(df.awb_number.isin(shipment.keys()).sum())
+
+    return out
+
+
+def load_remittances(df, merchant):
+    """CodRemittance has no unique key, so a row counts as already loaded when the same
+    AWB + date + UTR is in the table. Those are skipped, which makes re-uploads safe."""
+
+    courier = _courier_ids(df.courier.unique(), merchant)
+
+    shipment = dict(
+        Shipment.objects.for_merchant(merchant).values_list("awb_number", "id")
+    )
+
+    have = set(
+        CodRemittance.objects.for_merchant(merchant)
+        .filter(awb_number__in=list(df.awb_number.unique()))
+        .values_list("awb_number", "remittance_date", "utr_batch")
+    )
+
+    objs = [
+        CodRemittance(
+            merchant=merchant,
+            utr_batch=r.utr_batch,
+            courier_id=courier[r.courier],
+            awb_number=r.awb_number,
+            shipment_id=shipment.get(r.awb_number),
+            remittance_date=day(r.remittance_date),
+            amount_remitted_inr=money(r.amount_remitted_inr),
+        )
+        for r in df.itertuples()
+        if (r.awb_number, day(r.remittance_date), r.utr_batch) not in have
+    ]
+
+    CodRemittance.objects.bulk_create(objs, batch_size=BATCH)
+
+    return {
+        "created": len(objs),
+        "skipped_already_loaded": len(df) - len(objs),
+    }
+
+
+LOADERS = {
+    "orders": load_orders,
+    "shipments": load_shipments,
+    "pincode_zones": load_pincode_zones,
+    "rate_card": load_rate_card,
+    "invoices": load_invoices,
+    "remittances": load_remittances,
+}

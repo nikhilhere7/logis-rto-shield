@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class F:
     name: str
-    kind: str
+    kind: str  # id, str, ts, date, money, num, int, pincode, phone, choice, zone, bool
     required: bool = False
     aliases: tuple = ()
     choices: dict | None = None
@@ -67,5 +67,44 @@ SPECS = {
         F("rto_initiated_ts", "ts", False, ("rto initiated date", "rto date")),
         F("rto_received_ts", "ts", False, ("rto delivered date", "rto received date")),
         F("rto_condition", "str", False, ("return condition",)),
+    )),
+    "pincode_zones": Spec("Pincode to zone list", (
+        F("pincode", "pincode", True, ("pin code", "pin", "zip", "postal code", "destination pincode")),
+        F("zone", "zone", True, ("zone code", "billing zone", "courier zone")),
+        F("city", "str", False, ("city name", "district")),
+        F("state", "str", False, ("state name",)),
+        F("city_tier", "int", False, ("tier",)),
+        F("cod_serviceable", "bool", False, ("cod", "cod available", "cod serviceability")),
+    )),
+    "rate_card": Spec("Courier rate card", (
+        F("courier", "str", True, ("courier name", "courier partner", "carrier", "courier id")),
+        F("zone", "zone", True, ("zone code", "billing zone")),
+        F("first_500g_inr", "money", True, ("first 500g", "base rate", "upto 500g", "first slab")),
+        F("addl_500g_inr", "money", True, ("additional 500g", "addl 500g", "every additional 500g", "next slab")),
+        F("cod_fee_pct", "num", False, ("cod percent", "cod fee percent", "cod pct", "cod %")),
+        F("cod_min_inr", "money", False, ("cod minimum", "min cod charge", "cod min")),
+        F("rto_charge_pct_of_freight", "num", False, ("rto percent", "rto charge percent", "rto %")),
+    )),
+    "invoices": Spec("Courier invoice lines", (
+        F("invoice_id", "id", True, ("invoice no", "invoice number", "bill no", "bill number")),
+        F("invoice_date", "date", True, ("bill date", "invoice dt")),
+        F("courier", "str", True, ("courier name", "courier partner", "carrier", "courier id")),
+        F("awb_number", "id", True, ("awb", "awb no", "tracking number", "tracking id", "waybill")),
+        F("billed_weight_g", "num", True, ("billed weight", "charged weight", "chargeable weight", "charged weight g")),
+        F("billed_zone", "zone", True, ("zone", "charged zone")),
+        F("forward_freight_inr", "money", True, ("freight", "forward freight", "freight charge", "forward charge")),
+        F("total_billed_inr", "money", True, ("total", "total amount", "total billed", "net amount", "invoice amount")),
+        F("cod_charge_inr", "money", False, ("cod charge", "cod charges", "cod fee")),
+        F("rto_freight_inr", "money", False, ("rto freight", "rto charge", "rto charges", "return freight")),
+        F("gst_inr", "money", False, ("gst", "gst 18pct inr", "tax", "igst", "gst amount")),
+        F("line_ref", "id", False, ("invoice line id", "line id", "line no", "sr no")),
+    )),
+    "remittances": Spec("COD remittance statement", (
+        F("awb_number", "id", True, ("awb", "awb no", "tracking number", "tracking id", "waybill")),
+        F("courier", "str", True, ("courier name", "courier partner", "carrier", "courier id")),
+        F("remittance_date", "date", True, ("remitted on", "payment date", "remit date", "settlement date")),
+        F("amount_remitted_inr", "money", True, ("amount", "cod amount", "remitted amount", "amount remitted",
+                                                 "cod remitted")),
+        F("utr_batch", "id", False, ("utr", "utr no", "utr number", "reference no", "batch id", "crf id")),
     )),
 }

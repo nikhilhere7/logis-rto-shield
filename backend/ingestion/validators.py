@@ -5,7 +5,7 @@ import pandas as pd
 from django.conf import settings
 from django.utils import timezone
 
-from core.models import Order
+from core.models import Order, Shipment
 
 from .schemas import SPECS
 
@@ -101,6 +101,17 @@ def _choice(s, f):
     return s.str.lower().map(lookup)
 
 
+def _zone(s):
+    z = s.str.upper().str.replace(r"ZONE|[\s\-_]", "", regex=True)
+    return z.where(z.str.fullmatch(r"[A-Z0-9]{1,2}"))
+
+
+def _bool(s):
+    yes, no = {"yes", "y", "true", "1", "available"}, {"no", "n", "false", "0", "not available"}
+    low = s.str.lower()
+    return low.map(lambda v: True if v in yes else False if v in no else None, na_action="ignore")
+
+
 CLEANERS = {
     "id": lambda s, f: s.str.replace(r"\.0$", "", regex=True),
     "str": lambda s, f: s,
@@ -112,6 +123,8 @@ CLEANERS = {
     "pincode": lambda s, f: _pincode(s),
     "phone": lambda s, f: _phone(s),
     "choice": _choice,
+    "zone": lambda s, f: _zone(s),
+    "bool": lambda s, f: _bool(s),
 }
 
 
@@ -141,6 +154,18 @@ def orders_rules(df, rep, merchant):
     df.drop(columns=["customer_phone"], inplace=True)
 
 
+def grams(df, col, rep):
+    """Nobody ships 0.4 gram parcels. If the typical value is tiny, the file is in kg."""
+    if df[col].median() < 50:
+        df[col] = df[col] * 1000
+        rep.warn(df[col].notna(), "weight_looked_like_kg_converted_to_g", col)
+
+
+def warn_unknown_awb(df, rep, merchant):
+    known = set(Shipment.objects.for_merchant(merchant).values_list("awb_number", flat=True))
+    rep.warn(df.awb_number.notna() & ~df.awb_number.isin(known), "awb_not_in_shipments", "awb_number")
+
+
 def shipments_rules(df, rep, merchant):
     rep.reject(
         df.awb_number.duplicated(keep="first") & df.awb_number.notna(),
@@ -154,12 +179,7 @@ def shipments_rules(df, rep, merchant):
         "order_not_found", "order_id"
     )
     rep.reject(df.pkg_weight_g <= 0, "weight_not_positive", "pkg_weight_g")
-    if df.pkg_weight_g.median() < 50:
-        df["pkg_weight_g"] = df.pkg_weight_g * 1000
-        rep.warn(
-            df.pkg_weight_g.notna(),
-            "weight_looked_like_kg_converted_to_g", "pkg_weight_g"
-        )
+    grams(df, "pkg_weight_g", rep)
     rep.warn(
         (df.final_status == "Delivered") & df.delivered_ts.isna(),
         "delivered_without_date", "delivered_ts"
@@ -172,7 +192,68 @@ def shipments_rules(df, rep, merchant):
         df[c] = df[c].fillna(0)
 
 
-RULES = {"orders": orders_rules, "shipments": shipments_rules}
+def pincode_zones_rules(df, rep, merchant):
+    rep.reject(df.pincode.duplicated(keep="first") & df.pincode.notna(), "duplicate_in_file", "pincode")
+    df["city_tier"] = df.city_tier.fillna(1)
+    df["cod_serviceable"] = df.cod_serviceable.map(lambda v: True if v is None or pd.isna(v) else bool(v))
+
+
+def rate_card_rules(df, rep, merchant):
+    both = df.courier.notna() & df.zone.notna()
+    rep.reject(df.duplicated(["courier", "zone"], keep="first") & both, "duplicate_in_file", "zone")
+    rep.reject(df.first_500g_inr <= 0, "rate_not_positive", "first_500g_inr")
+    rep.reject(df.addl_500g_inr <= 0, "rate_not_positive", "addl_500g_inr")
+    df["cod_fee_pct"] = df.cod_fee_pct.fillna(0)
+    df["cod_min_inr"] = df.cod_min_inr.fillna(0)
+    df["rto_charge_pct_of_freight"] = df.rto_charge_pct_of_freight.fillna(100)
+
+
+def invoices_rules(df, rep, merchant):
+    """A repeated AWB or an unknown AWB is NOT rejected here. Those are billing errors, and the
+    audit engine can only catch them if they are stored. We reject only what we cannot read."""
+    for c in ["cod_charge_inr", "rto_freight_inr", "gst_inr"]:
+        df[c] = df[c].fillna(0)
+
+    rep.reject(df.billed_weight_g <= 0, "weight_not_positive", "billed_weight_g")
+    grams(df, "billed_weight_g", rep)
+
+    money = ["forward_freight_inr", "cod_charge_inr", "rto_freight_inr", "gst_inr", "total_billed_inr"]
+    rep.reject((df[money] < 0).any(axis=1), "negative_amount", "total_billed_inr")
+
+    parts = df.forward_freight_inr + df.cod_charge_inr + df.rto_freight_inr + df.gst_inr
+    rep.warn((parts - df.total_billed_inr).abs() > 1, "total_does_not_match_components", "total_billed_inr")
+
+    warn_unknown_awb(df, rep, merchant)
+
+    # no line id in the file? build a stable one, so re-uploading the same invoice updates it
+    nth = (df.groupby(["invoice_id", "awb_number"]).cumcount() + 1).astype(str)
+    df["line_ref"] = df.line_ref.fillna(df.invoice_id + "|" + df.awb_number + "|" + nth)
+
+    rep.reject(df.line_ref.duplicated(keep="first") & df.line_ref.notna(), "duplicate_in_file", "line_ref")
+
+
+def remittances_rules(df, rep, merchant):
+    df["utr_batch"] = df.utr_batch.fillna("")
+
+    rep.reject(df.amount_remitted_inr <= 0, "amount_not_positive", "amount_remitted_inr")
+
+    rep.reject(
+        df.duplicated(["awb_number", "remittance_date", "utr_batch"], keep="first") & df.awb_number.notna(),
+        "duplicate_in_file",
+        "awb_number"
+    )
+
+    warn_unknown_awb(df, rep, merchant)
+
+
+RULES = {
+    "orders": orders_rules,
+    "shipments": shipments_rules,
+    "pincode_zones": pincode_zones_rules,
+    "rate_card": rate_card_rules,
+    "invoices": invoices_rules,
+    "remittances": remittances_rules,
+}
 
 
 def read_file(path):
