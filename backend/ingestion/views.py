@@ -6,6 +6,8 @@ from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from ledger.build import rebuild_ledger
+
 from .loaders import LOADERS
 from .mapper import suggest_mapping
 from .models import UploadBatch
@@ -97,4 +99,5 @@ class CommitView(MerchantAPIView):
             b.load_result = LOADERS[b.dataset_type](clean, b.merchant)
             b.quality_report, b.status = report, UploadBatch.Status.LOADED
             b.save()
-        return Response(summary(b))
+            ledger = rebuild_ledger(b.merchant)
+        return Response({**summary(b), "ledger": ledger})
