@@ -6,6 +6,7 @@ from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from audit.engine import run_audit
 from ledger.build import rebuild_ledger
 
 from .loaders import LOADERS
@@ -100,4 +101,5 @@ class CommitView(MerchantAPIView):
             b.quality_report, b.status = report, UploadBatch.Status.LOADED
             b.save()
             ledger = rebuild_ledger(b.merchant)
-        return Response({**summary(b), "ledger": ledger})
+            audit = run_audit(b.merchant)
+        return Response({**summary(b), "ledger": ledger, "audit": audit})
