@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "ingestion",
     "ledger",
     "audit",
+    "ml",
 ]
 
 MIDDLEWARE = [
