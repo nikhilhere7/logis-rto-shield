@@ -9,40 +9,47 @@ import re
 import numpy as np
 import pandas as pd
 
-from core.models import Customer, Order, Shipment
+from core.models import Customer, Shipment
 from ledger.build import frame
 from ledger.models import ShipmentLedger
 
 IST = "Asia/Kolkata"
-SMOOTHING = 20
+SMOOTHING = 20              # a pincode needs about this many parcels before its own RTO rate is trusted
 LANDMARK = re.compile(r"\b(?:near|opp|opposite|behind|beside|next to|above|below)\b", re.IGNORECASE)
 
+CUSTOMER_SMOOTHING = 3      # same idea for one customer's own return rate
+REPEAT_CAP = 5              # a 6th order tells us little more than the 5th did
+
 NUMERIC = [
-    "is_cod", "order_value", "order_hour", "is_late_night",
-    "is_weekend", "prior_orders", "is_first_order",
-    "cust_prior_rto", "cust_prior_delivered",
-    "pin_prior_parcels", "pin_prior_rto_rate", "city_tier",
-    "addr_len", "addr_words", "addr_commas",
-    "addr_has_number", "addr_has_landmark", "addr_is_lowercase",
+    "is_cod",
+    "cod_first_order",
+    "order_value",
+    "order_hour",
+    "is_late_night",
+    "is_weekend",
+    "repeat_orders",
+    "cust_rto_rate",
+    "pin_prior_rto_rate",
+    "city_tier",
+    "addr_commas",
+    "addr_has_number",
+    "addr_has_landmark",
+    "addr_is_lowercase",
 ]
 
 CATEGORICAL = ["zone", "sales_channel"]
 
 LABELS = {
     "is_cod": "Cash on delivery",
+    "cod_first_order": "First-time customer paying COD",
     "order_value": "Order value",
     "order_hour": "Hour of order",
     "is_late_night": "Placed late at night",
     "is_weekend": "Placed on a weekend",
-    "prior_orders": "Customer's earlier orders",
-    "is_first_order": "First-time customer",
-    "cust_prior_rto": "Customer's past returns",
-    "cust_prior_delivered": "Customer's past deliveries",
-    "pin_prior_parcels": "Parcels sent to this pincode before",
+    "repeat_orders": "Customer's earlier orders",
+    "cust_rto_rate": "Customer's own return rate",
     "pin_prior_rto_rate": "Pincode's past RTO rate",
     "city_tier": "City tier",
-    "addr_len": "Address length",
-    "addr_words": "Words in address",
     "addr_commas": "Address parts",
     "addr_has_number": "House / flat number given",
     "addr_has_landmark": "Landmark given",
@@ -52,20 +59,24 @@ LABELS = {
 }
 
 TARGET = "is_rto"
-LATE_NIGHT_HOURS = {22, 23, 0, 1, 2, 3, 4, 5}
 UNRESOLVED_AFTER = pd.Timedelta(days=10)
+
+# history and helper columns kept next to the features: derive() needs them, and live scoring will
+# rebuild exactly these from the merchant's history as it stands now
+HISTORY = ["prior_orders", "cust_prior_rto", "cust_prior_delivered", "base_rto_rate", "pin_prior_parcels"]
 
 
 def address_features(text):
-    """A Series of addresses -> one row of address features per address, same index."""
+    """Works on a Series of address strings."""
     s = text.fillna("").astype(str)
     return pd.DataFrame({
-        "addr_len": s.str.len(),
-        "addr_words": s.str.split().str.len(),
+        "addr_len": s.str.len().clip(upper=100),
         "addr_commas": s.str.count(","),
         "addr_has_number": s.str.contains(r"\d").astype(int),
         "addr_has_landmark": s.str.contains(LANDMARK).astype(int),
-        "addr_is_lowercase": ((s == s.str.lower()) & (s.str.len() > 0)).astype(int),
+        "addr_is_lowercase": (
+            (s == s.str.lower()) & (s.str.len() > 0)
+        ).astype(int),
     }, index=text.index)
 
 
@@ -115,6 +126,7 @@ def time_aware_history(d):
     # merchant-wide return rate of outcomes known before each order; 0.2 until the first one is known
     everyone = _history_before(d.assign(_all="all"), events.assign(_all="all"), "_all")
     base_rate = (everyone.rto_n / everyone.n.replace(0, np.nan)).fillna(0.2).values
+    d["base_rto_rate"] = base_rate
 
     cust = _history_before(d, events, "customer_id")
     d["cust_prior_rto"] = cust["rto_n"]
@@ -126,17 +138,49 @@ def time_aware_history(d):
     return d
 
 
+def derive(d):
+    """Raw order-time facts and historical counts -> model features.
+
+    Training and live scoring must both use this function.
+    It must never use parcel outcomes or post-order information.
+    """
+    d = d.copy()
+
+    d["is_cod"] = (d.payment_mode == "COD").astype(int)
+    d["is_first_order"] = (d.prior_orders == 0).astype(int)
+    d["cod_first_order"] = d.is_cod * d.is_first_order
+
+    d["repeat_orders"] = d.prior_orders.clip(upper=REPEAT_CAP)
+
+    d["is_late_night"] = (
+        (d.order_hour >= 23) | (d.order_hour <= 3)
+    ).astype(int)
+
+    seen = d.cust_prior_rto + d.cust_prior_delivered
+
+    d["cust_rto_rate"] = (
+        d.cust_prior_rto + CUSTOMER_SMOOTHING * d.base_rto_rate
+    ) / (seen + CUSTOMER_SMOOTHING)
+
+    d["city_tier"] = d.city_tier.fillna(2)
+
+    return pd.concat(
+        [d, address_features(d.address)],
+        axis=1,
+    )
+
+
 def training_frame(merchant):
     """One row per non-lost shipment, oldest order first, with order-time features and the is_rto target."""
     ledger = frame(
         ShipmentLedger.objects.for_merchant(merchant).exclude(is_lost=True),
         "shipment_id", "awb_number", "customer_id", "order_ts", "order_hour", "payment_mode", "sales_channel",
-        "order_value", "prior_orders", "is_first_order", "pincode", "zone", "city_tier",
+        "order_value", "prior_orders", "pincode", "zone", "city_tier",
         "is_rto", "pickup_ts", "delivered_ts", "billed_total_inr",
     )
     # billed_total_inr is kept for the training economics (average RTO cost); it is never a feature
-    columns = ["shipment_id", "awb_number", "customer_id", "order_ts", "resolved_ts", TARGET, "billed_total_inr",
-               *NUMERIC, *CATEGORICAL]
+    columns = ["shipment_id", "awb_number", "customer_id", "pincode", "order_ts", "resolved_ts", TARGET,
+               "billed_total_inr", *HISTORY, *NUMERIC, *CATEGORICAL]
     if ledger.empty:
         return pd.DataFrame(columns=columns)
 
@@ -156,19 +200,14 @@ def training_frame(merchant):
     )
 
     d["order_ts"] = _utc(d["order_ts"])
-    local = d["order_ts"].dt.tz_convert(IST)
-    d["is_cod"] = (d["payment_mode"] == Order.PaymentMode.COD).astype(int)
+    d["is_weekend"] = (d["order_ts"].dt.tz_convert(IST).dt.day_of_week >= 5).astype(int)
     d["order_value"] = d["order_value"].astype(float)
-    d["is_late_night"] = d["order_hour"].isin(LATE_NIGHT_HOURS).astype(int)
-    d["is_weekend"] = (local.dt.day_of_week >= 5).astype(int)
-    d["is_first_order"] = d["is_first_order"].astype(int)
-    d["city_tier"] = d.city_tier.fillna(2)
     d["billed_total_inr"] = d["billed_total_inr"].astype(float)
+    d["address"] = d["address_line"]
     d[TARGET] = d[TARGET].astype(int)
-    d = pd.concat([d, address_features(d["address_line"])], axis=1)
 
     d = d.sort_values(["order_ts", "shipment_id"], kind="stable").reset_index(drop=True)
-    d = time_aware_history(d)
+    d = derive(time_aware_history(d))      # the same derive() live scoring uses
     return d[columns]
 
 

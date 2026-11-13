@@ -12,7 +12,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .features import IST, LABELS, TARGET, design_matrix, training_frame
+from .features import CATEGORICAL, IST, LABELS, NUMERIC, TARGET, design_matrix, training_frame
 from .models import RiskModel
 
 MIN_ROWS = 2000
@@ -22,6 +22,12 @@ VALID_SHARE = 0.15
 LGB_MARGIN = 0.005
 MARGIN_PCT = 30.0
 KEEP_RATE = 0.6
+RISK_BANDS = {
+    "medium_from": 0.10,
+    "high_from": 0.25,
+    "very_high_from": 0.50,
+}
+FEATURE_VERSION = 2         # M4 models had no version (old 26-column features); M5 features are version 2
 
 LGB_PARAMS = {
     "objective": "binary",
@@ -222,6 +228,7 @@ def fit(d):
     chosen = (lightgbm if use_lgb else logistic).calibrate(X_valid, y_valid)
 
     p_test = chosen.predict_proba(X_test)
+    money = economics(test, p_test, rto_cost(train))
     metrics = {
         "rows": len(d),
         "rto": int(d[TARGET].sum()),
@@ -234,8 +241,12 @@ def fit(d):
                                                                                          y_test.mean()))), 4),
         "top_10pct_of_orders_hold_pct_of_rto": top_share(y_test, p_test),
         "top_features": chosen.importance()[:TOP_FEATURES],
-        "economics": economics(test, p_test, rto_cost(train)),
-        "bands": bands(y_test, p_test),
+        "economics": money,
+        "bands": bands(y_test, p_test),                 # six-bin calibration check, unchanged from M4
+        "risk_bands": dict(RISK_BANDS),                 # fixed cut-offs for Low / Medium / High / Very high
+        "cod_prepaid_threshold": money["best"]["threshold"] if money["best"] else None,
+        "feature_columns": list(chosen.columns),
+        "feature_version": FEATURE_VERSION,
     }
     return chosen, metrics, test
 
@@ -283,6 +294,24 @@ def active_model(merchant):
     """This merchant's active trained model, or None."""
     return (RiskModel.objects.for_merchant(merchant)
             .filter(is_active=True, status=RiskModel.Status.TRAINED).first())
+
+
+def current_feature_columns(run):
+    """The columns a model trained on today's features would have: every NUMERIC feature, in order, then
+    one-hot columns of today's CATEGORICAL features. Which zones and channels appear depends on the
+    merchant's data, so the model's own one-hot values are kept; only their feature names are checked."""
+    saved = run.metrics.get("feature_columns") or []
+    onehot = [c for c in saved if "=" in c and base_feature(c) in CATEGORICAL]
+    return [*NUMERIC, *onehot]
+
+
+def model_feature_compatible(run):
+    """True only for a trained model built on the current feature set. M4 models (no version) are stale."""
+    return (
+        run.status == RiskModel.Status.TRAINED
+        and run.metrics.get("feature_version") == FEATURE_VERSION
+        and run.metrics.get("feature_columns") == current_feature_columns(run)
+    )
 
 
 def load_artifact(run):
