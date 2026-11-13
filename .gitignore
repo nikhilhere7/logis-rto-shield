@@ -5,3 +5,20 @@ __pycache__/
 db.sqlite3
 data/
 media/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Local backups and imported source files
+frontend/
+frontend-m7a-backup/
+_incoming/
+.playwright-mcp/
+
+# Dependencies and build output
+node_modules/
+dist/

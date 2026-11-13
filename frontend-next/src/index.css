@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+/* Fintech "high trust" palette: navy ink on a cool near-white, indigo for anything you can click,
+   gold as a rare highlight, teal for money gained and red for money lost. */
+@theme {
+  --color-paper: #f8fafc;      /* page background */
+  --color-wash: #eff6ff;       /* alternate sections and quiet panels */
+  --color-sheet: #ffffff;      /* cards */
+  --color-ink: #0a2540;        /* text, headings, dark surfaces */
+  --color-graphite: #475569;   /* secondary text */
+  --color-rule: #d9e2ef;       /* borders */
+  --color-hair: #e8eef7;       /* row dividers, chart tracks */
+  --color-brand: #635bff;      /* buttons, links, the active thing */
+  --color-brand-deep: #4b44d6; /* small indigo text, button hover */
+  --color-gold: #c7a84b;       /* highlight and selected state. Decoration only, never text. */
+  --color-gain: #0f766e;       /* money recovered: text */
+  --color-gain-fill: #0d9488;  /* money recovered: bars and fills */
+  --color-loss: #b91c1c;       /* money lost, very high risk */
+  --color-caution: #92600a;
+  --color-caution-bg: #fbefcf;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Inter Tight", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html { scroll-behavior: smooth; }
+body { @apply bg-paper text-ink font-sans antialiased; }
+.display { @apply font-display font-semibold tracking-tight; }
+.figure { @apply font-display font-semibold tracking-tight tabular-nums; }   /* big numbers */
+.num { @apply tabular-nums; }
+.eyebrow { @apply font-mono text-xs uppercase tracking-[0.14em] text-brand-deep; }  /* small pixel-style labels */
+.card { @apply min-w-0 rounded-2xl border border-rule bg-sheet; }
+.btn { @apply inline-flex items-center justify-center rounded-lg bg-brand px-5 py-3 font-medium text-white transition hover:bg-brand-deep active:scale-[0.98]; }
+.btn-quiet { @apply inline-flex items-center justify-center rounded-lg border border-rule bg-sheet px-5 py-3 font-medium transition hover:border-ink active:scale-[0.98]; }
+.chip { @apply rounded-full border border-rule bg-sheet px-3.5 py-1.5 text-sm transition hover:border-ink; }
+.chip-on { @apply rounded-full border border-ink bg-ink px-3.5 py-1.5 text-sm font-medium text-white; }
+
+@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.ticker { animation: ticker 52s linear infinite; }
+.ticker:hover { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .ticker { animation: none; }
+}
