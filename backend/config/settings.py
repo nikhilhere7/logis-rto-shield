@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "ledger",
     "audit",
     "ml",
+    "customers",
 ]
 
 MIDDLEWARE = [

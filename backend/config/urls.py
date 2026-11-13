@@ -10,4 +10,5 @@ urlpatterns = [
     path("api/", include("ledger.urls")),
     path("api/", include("audit.urls")),
     path("api/", include("ml.urls")),
+    path("api/", include("customers.urls")),
 ]
