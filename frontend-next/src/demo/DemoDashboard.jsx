@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { BarList, FactorBars, Heatmap, LineChart, Ring } from "../components/charts";
 import { CountUp, Reveal } from "../components/motion";
 import { SAMPLE } from "../data/sample";
+import { FactorLegend } from "../components/parts";
+import ThresholdSlider from "../components/ThresholdSlider";
 import { count, inr, pct } from "../lib/format";
 
 // Read-only demo built only from fields in SAMPLE. No API calls, no storage, no write actions.
@@ -24,7 +26,7 @@ function Panel({ title, note, children, className = "" }) {
 
 function Heading({ id, eyebrow, title, sub }) {
   return (
-    <div id={id} className="scroll-mt-40 pb-4 pt-12 first:pt-0">
+    <div id={id} className="scroll-mt-36 pb-4 pt-12 first:pt-0">
       <p className="eyebrow">{eyebrow}</p>
       <h2 className="display mt-1.5 text-2xl sm:text-3xl">{title}</h2>
       {sub && <p className="mt-1.5 text-sm text-graphite">{sub}</p>}
@@ -92,34 +94,24 @@ function RiskExamples() {
         </div>
         <h4 className="mt-6 font-semibold">What drove the score</h4>
         <div className="mt-2"><FactorBars factors={o.factors} /></div>
+        <FactorLegend />
       </Panel>
     </div>
   );
 }
 
 function Economics() {
-  // Each row: [threshold %, COD orders flagged, returns caught, good orders flagged, net ₹]
-  const best = SAMPLE.thresholds.reduce((a, t) => (t[4] > a[4] ? t : a));
+  // Each sample row: [threshold %, COD orders flagged, returns caught, good orders flagged, net ₹]
+  const rows = SAMPLE.thresholds.map(([threshold, flagged, caught, good, net]) => ({ threshold, flagged, caught, good, net }));
   return (
-    <Panel title="What refusing COD above each score would have done" note="Over the sample's test period. Net = return costs saved minus margin lost on good orders flagged.">
-      <div className="-mx-2 overflow-x-auto">
-        <table className="num w-full min-w-[540px] text-sm">
-          <thead><tr className="text-graphite">{["Refuse COD above", "Orders flagged", "Returns caught", "Good orders flagged", "Net"].map((h, i) => <th key={h} className={`border-b border-rule px-3 py-2.5 font-medium ${i ? "text-right" : "text-left"}`}>{h}</th>)}</tr></thead>
-          <tbody>
-            {SAMPLE.thresholds.map((t) => {
-              const top = t === best;
-              return (
-                <tr key={t[0]} className={`border-b border-hair last:border-b-0 ${top ? "bg-wash" : ""}`}>
-                  <td className="px-3 py-2.5 font-sans">{t[0]}%{top && <span className="ml-2 rounded-full border border-gold px-2 py-0.5 text-[11px] text-ink">best</span>}</td>
-                  <td className="px-3 py-2.5 text-right">{count(t[1])}</td>
-                  <td className="px-3 py-2.5 text-right">{count(t[2])}</td>
-                  <td className="px-3 py-2.5 text-right">{count(t[3])}</td>
-                  <td className={`px-3 py-2.5 text-right font-semibold ${t[4] < 0 ? "text-loss" : "text-gain"}`}>{inr(t[4])}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <Panel>
+      <div className="grid gap-8 lg:grid-cols-[1fr_1.3fr] lg:items-center">
+        <div className="min-w-0">
+          <h3 className="display text-xl">Where would you draw the line?</h3>
+          <p className="mt-2 text-sm text-graphite">Refuse COD to risky orders and you avoid returns, but some good customers walk away. Drag the slider to see what each cut-off would have done over the last ten weeks of the sample.</p>
+          <p className="mt-2 text-sm text-graphite">Assumes a 30% margin and that 6 in 10 flagged buyers agree to pay online. In your own workspace you set both.</p>
+        </div>
+        <ThresholdSlider rows={rows} period="ten weeks" id="demo-cut" />
       </div>
     </Panel>
   );
@@ -131,8 +123,8 @@ export default function DemoDashboard() {
   return (
     <>
       <div className="mb-7">
-        <h1 className="display text-3xl leading-tight sm:text-4xl">Demo Workspace — Sample Data</h1>
-        <p className="mt-1.5 text-sm text-graphite">A sample store · {period} · {count(SAMPLE.shipments)} shipments. Your own figures will differ.</p>
+        <h1 className="display text-3xl leading-tight sm:text-4xl">Demo workspace</h1>
+        <p className="mt-1.5 text-sm text-graphite">Sample data from one store · {period} · {count(SAMPLE.shipments)} shipments. Your own figures will differ.</p>
       </div>
 
       <Heading id="overview" eyebrow="Overview" title="The sample store at a glance" />
@@ -165,9 +157,6 @@ export default function DemoDashboard() {
 
       <Heading id="risk" eyebrow="Risk checker" title="How a new order gets scored" />
       <RiskExamples />
-      <Panel className="mt-4" title="Strongest risk factors in the sample">
-        <FactorBars factors={SAMPLE.factors} />
-      </Panel>
 
       <Heading id="economics" eyebrow="Economics" title="Where to stop offering COD" />
       <Economics />

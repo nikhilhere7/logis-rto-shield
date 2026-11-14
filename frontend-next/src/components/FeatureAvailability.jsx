@@ -59,29 +59,29 @@ export function RiskModeNote({ mode }) {
   );
 }
 
-// A sidebar page: its placeholder when the feature is available, its FeatureAvailability panel when not.
+// What sits above a built page when its feature works with a limit: how risk is scored, or which audit
+// checks are switched off. Renders nothing when there is nothing to say.
+export function FeatureNotes({ feature }) {
+  const ws = useWorkspace();
+  if (ws.status !== "ready") return null;
+  const f = featuresFor(ws.counts, ws.model)[feature];
+  if (!f?.note) return null;
+  return (
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rule bg-wash px-5 py-4 text-sm">
+      <p className="min-w-0 flex-1 text-graphite">{f.note}</p>
+      {f.noteAction && <Link to={f.noteAction.to} className="btn-quiet py-2 text-sm">{f.noteAction.label}</Link>}
+    </div>
+  );
+}
+
+// A sidebar page: the page itself when the feature is available, its FeatureAvailability panel when not.
+// Built pages draw their own heading, so nothing is added around them here.
 export function FeaturePage({ feature, title, children }) {
   const ws = useWorkspace();
   if (ws.status === "loading") return <p className="text-graphite" role="status">Loading your workspace…</p>;
   if (ws.status === "error") return <WorkspaceError message={ws.message} onRetry={ws.retry} />;
   const f = featuresFor(ws.counts, ws.model)[feature];
-  if (f.status === "available") {
-    return (
-      <>
-        <PageHeader title={title} />
-        <div className="flex max-w-xl flex-col gap-4">
-          {f.mode && <RiskModeNote mode={f.mode} />}
-          {f.note && (
-            <Panel title="Some checks are limited">
-              <p className="text-sm text-graphite">{f.note}</p>
-              {f.noteAction && <Link to={f.noteAction.to} className="btn-quiet mt-4 py-2.5 text-sm">{f.noteAction.label}</Link>}
-            </Panel>
-          )}
-          {children}
-        </div>
-      </>
-    );
-  }
+  if (f.status === "available") return children;
   return (
     <>
       <PageHeader title={title} />

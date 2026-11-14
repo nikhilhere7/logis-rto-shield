@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .env
 db.sqlite3
-data/
+/data/
 media/
 
 # Frontend
@@ -22,3 +22,4 @@ _incoming/
 # Dependencies and build output
 node_modules/
 dist/
+/logis-m7b/

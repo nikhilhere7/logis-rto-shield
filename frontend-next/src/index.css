@@ -36,6 +36,10 @@ body { @apply bg-paper text-ink font-sans antialiased; }
 .chip { @apply rounded-full border border-rule bg-sheet px-3.5 py-1.5 text-sm transition hover:border-ink; }
 .chip-on { @apply rounded-full border border-ink bg-ink px-3.5 py-1.5 text-sm font-medium text-white; }
 
+.field { @apply h-11 w-full rounded-lg border border-rule bg-sheet px-3 text-[15px] outline-none transition placeholder:text-graphite focus:border-brand focus:ring-4 focus:ring-brand/15; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .ticker { animation: ticker 52s linear infinite; }
 .ticker:hover { animation-play-state: paused; }

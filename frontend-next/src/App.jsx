@@ -5,13 +5,25 @@ import { FeaturePage } from "./components/FeatureAvailability";
 import DemoDashboard from "./demo/DemoDashboard";
 import DemoLayout from "./demo/DemoLayout";
 import { AuthProvider, RequireAuth } from "./lib/auth";
+import Audit from "./pages/Audit";
 import ComingSoon from "./pages/ComingSoon";
+import Couriers from "./pages/Couriers";
+import Customers from "./pages/Customers";
 import Dashboard from "./pages/Dashboard";
 import Landing from "./pages/Landing";
+import Risk from "./pages/Risk";
+import Rto from "./pages/Rto";
 import Uploads from "./pages/Uploads";
 
-// [path, title, feature]: each page shows its placeholder when available, its FeatureAvailability panel when not.
-const LATER = [["risk", "Order risk checker", "risk"], ["customers", "Customers", "customers"], ["couriers", "Couriers", "couriers"], ["rto", "RTO analytics", "rto"], ["audit", "Billing audit", "audit"], ["reports", "Reports", "reports"]];
+// [path, title, feature, page]: each page shows itself when its feature is available, and its FeatureAvailability panel when not.
+const PAGES = [
+  ["risk", "Order risk checker", "risk", <Risk />],
+  ["customers", "Customers", "customers", <Customers />],
+  ["couriers", "Couriers", "couriers", <Couriers />],
+  ["rto", "RTO analytics", "rto", <Rto />],
+  ["audit", "Billing audit", "audit", <Audit />],
+  ["reports", "Reports", "reports", <ComingSoon />],
+];
 
 export default function App() {
   return (
@@ -29,8 +41,8 @@ export default function App() {
           <Route path="/app" element={<RequireAuth><AppShell /></RequireAuth>}>
             <Route index element={<Dashboard />} />
             <Route path="uploads" element={<Uploads />} />
-            {LATER.map(([path, title, feature]) => (
-              <Route key={path} path={path} element={<FeaturePage feature={feature} title={title}><ComingSoon /></FeaturePage>} />
+            {PAGES.map(([path, title, feature, page]) => (
+              <Route key={path} path={path} element={<FeaturePage feature={feature} title={title}>{page}</FeaturePage>} />
             ))}
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

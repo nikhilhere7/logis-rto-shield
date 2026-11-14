@@ -16,3 +16,16 @@ export function inrShort(n) {
   if (Math.abs(v) >= 1e5) return `₹${(v / 1e5).toFixed(1)} L`;
   return inr(v);
 }
+
+// Money with its sign in front: 25522 -> "+₹25,522", -12481 -> "−₹12,481". Zero has no sign.
+export function signedInr(n) {
+  if (bad(n)) return DASH;
+  const v = Math.round(Number(n));
+  return `${v > 0 ? "+" : v < 0 ? "−" : ""}${inr(Math.abs(v))}`;
+}
+
+// "2025-12-29" or an ISO timestamp -> "29 Dec 2025"
+export function day(value) {
+  const d = new Date(value);
+  return value && !Number.isNaN(d.getTime()) ? d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : DASH;
+}
