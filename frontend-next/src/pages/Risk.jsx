@@ -274,15 +274,21 @@ export default function Risk() {
                 : <motion.p key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-10 text-center text-graphite">Fill in the order and press Check. The score, the reasons behind it and what to do next appear here.</motion.p>}
             </AnimatePresence>
           </Panel>
-          {history.length > 1 && (
-            <Panel title="Checked this visit" note="Click one to see it again">
+          {history.length > 0 && (
+            <Panel title="Checked this visit" note="Click one to see it again"
+              action={<button type="button" onClick={() => { setHistory([]); setShown(null); }} className="text-sm font-medium text-brand-deep underline underline-offset-4">Clear all</button>}>
               <div className="flex flex-col gap-1.5">
                 {history.map((h) => (
-                  <button key={h.key} type="button" onClick={() => setShown(h)} aria-pressed={shown?.key === h.key}
-                    className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-wash ${shown?.key === h.key ? "bg-wash" : ""}`}>
-                    <span className="num min-w-0 truncate">{h.summary}</span>
-                    <span className="flex shrink-0 items-center gap-2"><span className="num font-medium">{pct(h.risk_pct)}</span><BandPill band={h.risk_category} /></span>
-                  </button>
+                  <div key={h.key} className={`flex items-center gap-1 rounded-lg transition hover:bg-wash ${shown?.key === h.key ? "bg-wash" : ""}`}>
+                    <button type="button" onClick={() => setShown(h)} aria-pressed={shown?.key === h.key}
+                      className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2 text-left text-sm">
+                      <span className="num min-w-0 truncate">{h.summary}</span>
+                      <span className="flex shrink-0 items-center gap-2"><span className="num font-medium">{pct(h.risk_pct)}</span><BandPill band={h.risk_category} /></span>
+                    </button>
+                    <button type="button" aria-label={`Remove ${h.summary} from the list`} title="Remove"
+                      onClick={() => { setHistory((list) => list.filter((x) => x.key !== h.key)); if (shown?.key === h.key) setShown(null); }}
+                      className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-graphite transition hover:bg-sheet hover:text-loss">×</button>
+                  </div>
                 ))}
               </div>
             </Panel>

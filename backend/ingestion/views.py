@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from audit.engine import run_audit
 from ledger.build import rebuild_ledger
 
+from .cleanup import KINDS, clear, clear_everything, delete_file_after_commit
 from .loaders import LOADERS
 from .mapper import suggest_mapping
 from .models import UploadBatch
@@ -86,8 +87,40 @@ class ValidateView(MerchantAPIView):
         return Response(summary(b))
 
 
+class UploadDetailView(MerchantAPIView):
+    """Take one upload off the history. Only uploads that were never loaded can go this way:
+    a loaded file's rows are in the workspace, and are removed with DataView instead."""
+
+    def delete(self, request, pk):
+        b = self.batch(pk)
+        if b.status == UploadBatch.Status.LOADED:
+            raise ValidationError({"detail": "This file's rows are in your workspace. Remove them with \"Remove data\" for this kind of file."})
+        with transaction.atomic():
+            delete_file_after_commit(b.file)
+            b.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DataView(MerchantAPIView):
+    """Remove uploaded data, one kind at a time or all of it. The body must say "remove" in `confirm`,
+    so a stray request cannot wipe a workspace."""
+    parser_classes = [JSONParser]
+
+    def post(self, request):
+        if request.data.get("confirm") != "remove":
+            raise ValidationError({"confirm": 'Send "remove" to confirm.'})
+        kinds = request.data.get("kinds")
+        if kinds == "all":
+            return Response(clear_everything(self.merchant()))
+        if not isinstance(kinds, list) or not kinds or any(k not in KINDS for k in kinds):
+            raise ValidationError({"kinds": f'Send "all" or a list taken from: {", ".join(KINDS)}'})
+        return Response(clear(self.merchant(), kinds))
+
+
 class CommitView(MerchantAPIView):
-    """Step 3. Load the valid rows. All of them go in, or none do."""
+    """Step 3. Load the valid rows. All of them go in, or none do.
+    With {"replace": true} the rows of this kind already in the workspace are removed first, in the same
+    transaction, so the new file takes their place instead of being added to them."""
 
     def post(self, request, pk):
         b = self.batch(pk)
@@ -96,7 +129,10 @@ class CommitView(MerchantAPIView):
         clean, report = run_validation(read_file(b.file.path), b.dataset_type, b.column_mapping, b.merchant)
         if clean.empty:
             raise ValidationError("No valid rows to load.")
+        replace = request.data.get("replace") is True
         with transaction.atomic():
+            if replace:
+                clear(b.merchant, [b.dataset_type], rebuild=False, keep=b.id)
             b.load_result = LOADERS[b.dataset_type](clean, b.merchant)
             b.quality_report, b.status = report, UploadBatch.Status.LOADED
             b.save()

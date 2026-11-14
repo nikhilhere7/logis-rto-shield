@@ -35,7 +35,7 @@ export const session = {
   },
 };
 
-async function send(path, { method = "GET", body, token } = {}) {
+async function send(path, { method = "GET", body, token, blob = false } = {}) {
   const file = body instanceof FormData; // file uploads: the browser sets the multipart content type and boundary itself
   let res;
   try {
@@ -53,6 +53,9 @@ async function send(path, { method = "GET", body, token } = {}) {
   }
   // Non-JSON bodies (an HTML error page, an empty 204) must not crash the caller.
   let data = null;
+  // A file download (a PDF report): hand back the raw bytes and the file name the server chose.
+  // Errors still arrive as JSON and are read below.
+  if (blob && res.ok) return { ok: true, status: res.status, data: { blob: await res.blob(), filename: filenameFrom(res.headers.get("Content-Disposition")) } };
   if (res.status !== 204) {
     const text = await res.text().catch(() => "");
     if (text) {
@@ -147,4 +150,25 @@ export async function api(path, options = {}) {
   }
   if (!r.ok) throw new ApiError(r.status, r.data);
   return r.data;
+}
+
+// attachment; filename="logis_x.pdf" -> logis_x.pdf. Only a plain file name is accepted (no folders).
+export function filenameFrom(disposition) {
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition || "");
+  const name = m ? decodeURIComponent(m[1]).trim() : "";
+  return /^[\w.\- ]+$/.test(name) ? name : null;
+}
+
+// Fetch a file that sits behind the login and hand it to the browser as a download, under the name the
+// server gave it. `fallback` is only used if the server sent none.
+export async function download(path, fallback = "logis_report.pdf") {
+  const { blob, filename } = await api(path, { blob: true });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || fallback;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }

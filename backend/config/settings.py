@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     "ml",
     "customers",
     "accounts",
+    "reports",
 ]
 
 MIDDLEWARE = [
@@ -173,6 +174,8 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5174,http://127.0.0.1:5174",
 ).split(",")
+# Lets the React app read the file name the server gives a downloaded report.
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
 
 # Email

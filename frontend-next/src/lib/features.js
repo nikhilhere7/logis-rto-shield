@@ -87,7 +87,10 @@ export function featuresFor(counts = {}, model = null) {
       }),
     cod,
     risk: available("Order risk checker", { tag: mode.usesRules ? "Rules" : null, mode }),
-    reports: { status: "coming-soon", title: "Reports", description: "Downloadable reports are not built yet.", tag: "Soon" },
+    // The Reports page asks the server which of the five reports this workspace can build; it only needs some data to open.
+    reports: has(c.orders) || has(c.shipments)
+      ? available("Reports")
+      : needs("Reports", "Reports are built from your own data. Import your orders to start.", "Import orders", "orders", "Needs orders"),
   };
 }
 

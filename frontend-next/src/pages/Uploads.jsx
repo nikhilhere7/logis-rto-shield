@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader, Panel } from "../components/AppShell";
+import YourData, { DATA } from "../components/YourData";
 import { api } from "../lib/api";
 import { uploadTypeFrom } from "../lib/features";
 import { count } from "../lib/format";
@@ -16,6 +17,7 @@ const TYPES = [
   ["remittances", "COD remittances", "For COD tracing", "The cash each courier paid back, per AWB."],
 ];
 const NAMES = Object.fromEntries(TYPES.map((t) => [t[0], t[1]]));
+const HELD = Object.fromEntries(DATA.map(([kind, , key, unit, note]) => [kind, [key, unit, note]]));  // kind -> [workspace count key, unit, what else goes]
 const pretty = (s) => s.replace(/_inr$|_g$|_cm$|_ts$/, "").replaceAll("_", " ");
 const RULES = {
   missing_required_value: "is empty", duplicate_in_file: "appears more than once", order_not_found: "is not in your uploaded orders",
@@ -52,6 +54,8 @@ export default function Uploads() {
   const [history, setHistory] = useState([]);
   const [historyError, setHistoryError] = useState("");
   const [over, setOver] = useState(false);
+  const [replace, setReplace] = useState(false);  // false: add to what is there; true: the new file takes its place
+  const [understood, setUnderstood] = useState(false);  // replacing removes data: the person must tick that they understand
   const input = useRef(null);
 
   const loadHistory = () =>
@@ -75,7 +79,10 @@ export default function Uploads() {
   };
   const clearInput = () => { if (input.current) input.current.value = ""; };
   // Back to choosing: pick up whatever the URL says now (it may have changed during the upload).
-  const reset = () => { setBatch(null); setStage(0); setError(""); setKind(urlKind); clearInput(); };
+  const reset = () => { setBatch(null); setStage(0); setError(""); setKind(urlKind); setReplace(false); setUnderstood(false); clearInput(); };
+  const refresh = () => { loadHistory(); workspace.reload(); };
+  // A file uploaded but never loaded can be taken off the history. Loaded files are removed with "Your data".
+  const forget = (id) => api(`/api/ingestion/uploads/${id}/`, { method: "DELETE" }).then(loadHistory).catch((e) => setHistoryError(e.message));
 
   // The file goes up as multipart FormData; api() leaves Content-Type to the browser so the boundary is set correctly.
   const send = (file) => file && !busy && run(async () => {
@@ -90,6 +97,7 @@ export default function Uploads() {
       setBatch(b);
       setMapping(b.column_mapping);
       setStage(1);
+      loadHistory(); // the new upload shows in the history straight away, so it can be removed if it is abandoned
     } finally {
       clearInput(); // lets the same file be chosen again after a failure
     }
@@ -99,13 +107,16 @@ export default function Uploads() {
     setStage(2);
   });
   const commit = () => run(async () => {
-    setBatch({ ...batch, ...(await api(`/api/ingestion/uploads/${batch.id}/commit/`, { method: "POST" })) });
+    const swap = replacing;   // only replace when there is something to replace and the warning was acknowledged
+    setBatch({ ...batch, replaced: swap, ...(await api(`/api/ingestion/uploads/${batch.id}/commit/`, { method: "POST", body: { replace: swap } })) });
     setStage(3);
-    loadHistory();
-    workspace.reload(); // new data may unlock features: refresh the counts the sidebar and dashboard read
+    refresh(); // new data may unlock features: refresh the history and the counts the sidebar and dashboard read
   });
 
   const report = batch?.quality_report;
+  const [heldKey, heldUnit, heldNote] = HELD[batch?.dataset_type] || [];
+  const already = workspace.status === "ready" && heldKey ? workspace.counts[heldKey] : 0;
+  const replacing = replace && already > 0 && understood;
   const missing = batch ? (batch.required_fields || []).filter((f) => !mapping[f]) : [];
 
   return (
@@ -200,8 +211,36 @@ export default function Uploads() {
                     </div>
                   ))}
                   {!report.errors.length && !report.warnings.length && <p className="mt-5 rounded-lg bg-gain/10 px-4 py-3 text-sm text-gain">Every row passed.</p>}
+                  {already > 0 && (
+                    <fieldset className="mt-5">
+                      <legend className="mb-2 font-semibold">You already have {count(already)} {heldUnit} loaded</legend>
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        {[[false, "Add to them", "New rows are added. A row with an ID that is already there is updated, not duplicated."],
+                          [true, "Replace them", `The ${count(already)} ${heldUnit} now loaded are removed first, and this file takes their place.${batch.dataset_type === "orders" ? " Your shipments go with the old orders." : ""}`]].map(([value, name, text]) => (
+                          <label key={name} className={`cursor-pointer rounded-xl border p-3.5 text-sm transition ${replace === value ? "border-brand bg-wash shadow-[0_0_0_3px_rgba(99,91,255,0.15)]" : "border-rule hover:border-ink"}`}>
+                            <input type="radio" name="replace" checked={replace === value} onChange={() => { setReplace(value); setUnderstood(false); }} className="sr-only" />
+                            <span className="font-semibold">{name}</span>
+                            <span className="mt-1 block text-graphite">{text}</span>
+                          </label>
+                        ))}
+                      </div>
+                      {replace && (
+                        <div role="alert" className="mt-3 rounded-xl border border-loss px-4 py-3 text-sm">
+                          <p className="font-semibold text-loss">Replacing removes data first. This cannot be undone.</p>
+                          <p className="mt-1">All {count(already)} {heldUnit} now loaded are deleted. {heldNote} The ledger and billing audit are rebuilt afterwards.</p>
+                          {batch.dataset_type === "orders" && (
+                            <p className="mt-1 font-medium">Your shipments, their tracking and your customers are removed with the old orders. Upload your shipments file again after this one.</p>
+                          )}
+                          <label className="mt-3 flex cursor-pointer items-start gap-2.5">
+                            <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-loss)]" />
+                            <span>I understand that the {heldUnit} already loaded{batch.dataset_type === "orders" ? ", and the shipments and customers that go with them," : ""} will be permanently removed.</span>
+                          </label>
+                        </div>
+                      )}
+                    </fieldset>
+                  )}
                   <div className="mt-5 flex flex-wrap gap-3">
-                    <button type="button" className="btn disabled:opacity-60" disabled={busy || !report.valid_rows} onClick={commit}>{busy ? "Loading…" : `Load ${count(report.valid_rows)} rows`}</button>
+                    <button type="button" className="btn disabled:opacity-60" disabled={busy || !report.valid_rows || (replace && already > 0 && !understood)} onClick={commit}>{busy ? "Loading…" : `${replace && already ? "Replace with" : "Load"} ${count(report.valid_rows)} rows`}</button>
                     <button type="button" className="btn-quiet" onClick={() => setStage(1)}>Back to columns</button>
                     <button type="button" className="btn-quiet" onClick={reset}>Cancel</button>
                   </div>
@@ -211,8 +250,9 @@ export default function Uploads() {
               {stage === 3 && (
                 <div className="py-4 text-center">
                   <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 260, damping: 16 }} className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gain-fill text-3xl text-white">✓</motion.div>
-                  <p className="display mt-4 text-2xl">{NAMES[batch.dataset_type]} loaded</p>
-                  <p className="mt-1 text-graphite">{count(batch.load_result?.created)} new rows, {count(batch.load_result?.updated ?? batch.load_result?.skipped_already_loaded ?? 0)} already known.</p>
+                  <p className="display mt-4 text-2xl">{NAMES[batch.dataset_type]} {batch.replaced ? "replaced" : "loaded"}</p>
+                  <p className="mt-1 text-graphite">{batch.replaced ? `The old rows were removed and ${count(batch.load_result?.created)} rows were loaded in their place.`
+                    : `${count(batch.load_result?.created)} new rows, ${count(batch.load_result?.updated ?? batch.load_result?.skipped_already_loaded ?? 0)} already known.`}</p>
                   {batch.ledger && <p className="mt-1 text-sm text-graphite">Your ledger now holds {count(batch.ledger.rows)} parcels{batch.audit ? ` and the audit found ${count(batch.audit.findings)} charges to dispute` : ""}.</p>}
                   <button type="button" className="btn mt-5" onClick={reset}>Upload another file</button>
                 </div>
@@ -221,6 +261,8 @@ export default function Uploads() {
           </AnimatePresence>
         </Panel>
 
+        <div className="flex min-w-0 flex-col gap-4">
+        {workspace.status === "ready" && <YourData counts={workspace.counts} onChanged={refresh} />}
         <Panel title="Upload history">
           {historyError ? (
             <div role="alert" className="text-sm text-loss">
@@ -232,14 +274,21 @@ export default function Uploads() {
               {history.slice(0, 12).map((h) => (
                 <li key={h.id} className="flex items-baseline justify-between gap-3 border-t border-hair py-3 text-sm first:border-t-0 first:pt-0">
                   <div className="min-w-0"><p className="truncate font-medium">{h.file}</p><p className="text-graphite">{NAMES[h.dataset_type] || h.dataset_type}</p></div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${h.status === "loaded" ? "bg-gain/10 text-gain" : h.status === "failed" ? "bg-loss/10 text-loss" : "bg-wash text-graphite"}`}>
-                    {h.status === "loaded" ? `${count(h.quality_report?.valid_rows)} rows` : h.status}
+                  <span className="flex shrink-0 items-center gap-1">
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${h.status === "loaded" ? "bg-gain/10 text-gain" : h.status === "failed" ? "bg-loss/10 text-loss" : "bg-wash text-graphite"}`}>
+                      {h.status === "loaded" ? `${count(h.quality_report?.valid_rows)} rows` : h.status === "failed" ? "failed" : "not loaded"}
+                    </span>
+                    {h.status !== "loaded" && h.id !== batch?.id && (
+                      <button type="button" onClick={() => forget(h.id)} aria-label={`Remove ${h.file} from the history`} title="Remove from the history"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-graphite transition hover:bg-wash hover:text-loss">×</button>
+                    )}
                   </span>
                 </li>
               ))}
             </ul>
           )}
         </Panel>
+        </div>
       </div>
     </>
   );

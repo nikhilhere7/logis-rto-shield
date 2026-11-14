@@ -6,11 +6,11 @@ import DemoDashboard from "./demo/DemoDashboard";
 import DemoLayout from "./demo/DemoLayout";
 import { AuthProvider, RequireAuth } from "./lib/auth";
 import Audit from "./pages/Audit";
-import ComingSoon from "./pages/ComingSoon";
 import Couriers from "./pages/Couriers";
 import Customers from "./pages/Customers";
 import Dashboard from "./pages/Dashboard";
 import Landing from "./pages/Landing";
+import Reports from "./pages/Reports";
 import Risk from "./pages/Risk";
 import Rto from "./pages/Rto";
 import Uploads from "./pages/Uploads";
@@ -22,7 +22,7 @@ const PAGES = [
   ["couriers", "Couriers", "couriers", <Couriers />],
   ["rto", "RTO analytics", "rto", <Rto />],
   ["audit", "Billing audit", "audit", <Audit />],
-  ["reports", "Reports", "reports", <ComingSoon />],
+  ["reports", "Reports", "reports", <Reports />],
 ];
 
 export default function App() {
