@@ -12,7 +12,10 @@ from .models import CodRemittance, Customer, InvoiceLine, Merchant, Order, Pinco
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health(request):
-    return Response({"status": "ok", "merchants": Merchant.objects.count()})
+    """Public check for uptime monitors. It touches the database, so a regular ping also keeps a free
+    Supabase project from pausing. It reveals nothing about the data."""
+    Merchant.objects.exists()
+    return Response({"status": "ok"})
 
 
 # ---------------------------------------------------------------- workspace readiness

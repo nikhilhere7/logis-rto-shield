@@ -1,5 +1,7 @@
 """Clean every column, reject rows that can't be trusted, and report exactly why."""
 import hashlib
+import io
+import os
 
 import pandas as pd
 from django.conf import settings
@@ -256,12 +258,22 @@ RULES = {
 }
 
 
-def read_file(path):
-    path = str(path)
-    if path.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(path, dtype=str, keep_default_na=False)
+def read_file(source):
+    """Read an uploaded CSV or Excel file into a DataFrame of strings.
+
+    `source` is a path (str or os.PathLike) or a stored file (an upload's FileField). A stored file is opened
+    through Django's storage, so it works the same whether the file is on local disk or in Supabase Storage;
+    its type comes from its name, never from .path, which remote storage does not have."""
+    if isinstance(source, (str, os.PathLike)):
+        name = str(source)
+    else:
+        name = str(source.name)
+        with source.open("rb") as f:   # closed on leaving the block, even if reading fails
+            source = io.BytesIO(f.read())
+    if name.lower().endswith((".xlsx", ".xls")):
+        return pd.read_excel(source, dtype=str, keep_default_na=False)
     return pd.read_csv(
-        path, dtype=str, keep_default_na=False, encoding_errors="replace"
+        source, dtype=str, keep_default_na=False, encoding_errors="replace"
     )
 
 

@@ -51,7 +51,7 @@ class UploadView(MerchantAPIView):
         b = UploadBatch.objects.create(merchant=self.merchant(), dataset_type=kind, file=f,
                                        original_filename=f.name, uploaded_by=request.user)
         try:
-            raw = read_file(b.file.path)
+            raw = read_file(b.file)
         except Exception as e:
             b.status = UploadBatch.Status.FAILED
             b.save(update_fields=["status"])
@@ -79,7 +79,7 @@ class ValidateView(MerchantAPIView):
             raise ValidationError("This upload is already loaded.")
         mapping = {**b.column_mapping, **(request.data.get("mapping") or {})}
         try:
-            _, report = run_validation(read_file(b.file.path), b.dataset_type, mapping, b.merchant)
+            _, report = run_validation(read_file(b.file), b.dataset_type, mapping, b.merchant)
         except MappingError as e:
             raise ValidationError({"mapping": str(e)})
         b.column_mapping, b.quality_report, b.status = mapping, report, UploadBatch.Status.VALIDATED
@@ -126,7 +126,7 @@ class CommitView(MerchantAPIView):
         b = self.batch(pk)
         if b.status != UploadBatch.Status.VALIDATED:
             raise ValidationError("Validate this upload before committing it.")
-        clean, report = run_validation(read_file(b.file.path), b.dataset_type, b.column_mapping, b.merchant)
+        clean, report = run_validation(read_file(b.file), b.dataset_type, b.column_mapping, b.merchant)
         if clean.empty:
             raise ValidationError("No valid rows to load.")
         replace = request.data.get("replace") is True

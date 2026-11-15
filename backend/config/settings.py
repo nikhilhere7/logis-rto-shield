@@ -61,6 +61,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
+    "whitenoise.middleware.WhiteNoiseMiddleware",  # serves the admin's CSS and JS in production
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -134,12 +135,41 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / "staticfiles"  # collectstatic puts the admin's files here; WhiteNoise serves them
 
 
 # Media files (uploaded ingestion files)
 
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
+
+# Where uploaded files and trained models are kept. Locally: the media/ folder. In production the server's disk
+# is wiped on every restart, so when a bucket is configured they go to Supabase Storage through its S3 API.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
+if os.environ.get("STORAGE_BUCKET"):
+    from botocore.config import Config
+
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": os.environ["STORAGE_BUCKET"],
+            "endpoint_url": os.environ["STORAGE_ENDPOINT"],      # https://<project-ref>.storage.supabase.co/storage/v1/s3
+            "region_name": os.environ["STORAGE_REGION"],
+            "access_key": os.environ["STORAGE_ACCESS_KEY_ID"],
+            "secret_key": os.environ["STORAGE_SECRET_ACCESS_KEY"],
+            "default_acl": None,          # the bucket is private; files are only read by the server
+            "file_overwrite": False,      # two uploads with the same name never replace each other
+            "querystring_auth": True,
+            # Supabase wants path-style addresses and signature v4, and does not accept the extra
+            # checksums newer AWS libraries add by default.
+            "client_config": Config(signature_version="s3v4", s3={"addressing_style": "path"},
+                                    request_checksum_calculation="when_required",
+                                    response_checksum_validation="when_required"),
+        },
+    }
 
 
 # Phone hashing (override via environment in non-dev environments)
@@ -169,11 +199,12 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
 }
 
-# The React dev server. Add the deployed frontend's address here in M9.
-CORS_ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5174,http://127.0.0.1:5174",
-).split(",")
+# The React app's addresses: the dev server locally, the Netlify site in production (set in the environment).
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:5174,http://127.0.0.1:5174").split(",")
+    if origin.strip()
+]
 # Lets the React app read the file name the server gives a downloaded report.
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
@@ -185,4 +216,33 @@ MAILERS = {
     'default': {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
+}
+
+
+# Production
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()
+]
+# Render tells the service its own address. Allowing it here means the address never has to be typed in by hand.
+RENDER_HOST = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if RENDER_HOST:
+    if RENDER_HOST not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(RENDER_HOST)
+    if f"https://{RENDER_HOST}" not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(f"https://{RENDER_HOST}")
+
+# Render ends HTTPS at its proxy and passes the request on, saying so in this header. Trusting it lets Django
+# know the request was secure, so the admin's cookies can be marked secure.
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# Errors go to the log Render shows, instead of disappearing.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO")},
 }
