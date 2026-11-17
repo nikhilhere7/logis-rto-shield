@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from audit.engine import run_audit
+from core.perf import RequestTimer
 from ledger.build import rebuild_ledger
 
 from .cleanup import KINDS, clear, clear_everything, delete_file_after_commit
@@ -43,22 +44,32 @@ class UploadView(MerchantAPIView):
         return Response([summary(b) for b in UploadBatch.objects.for_merchant(self.merchant())[:50]])
 
     def post(self, request):
+        # The request body has already been received and parsed by the time post() runs, so total_ms here
+        # does not include the browser -> Render transfer.
+        with RequestTimer("upload") as t:
+            return self._post(request, t)
+
+    def _post(self, request, t):
         kind, f = request.data.get("dataset_type"), request.FILES.get("file")
         if kind not in SPECS:
             raise ValidationError({"dataset_type": f"Must be one of: {', '.join(SPECS)}"})
         if f is None or not f.name.lower().endswith((".csv", ".xlsx", ".xls")):
             raise ValidationError({"file": "Upload a .csv or .xlsx file."})
-        b = UploadBatch.objects.create(merchant=self.merchant(), dataset_type=kind, file=f,
-                                       original_filename=f.name, uploaded_by=request.user)
+        t.set(dataset_type=kind, upload_bytes=f.size)
+        with t.step("create_and_store"):  # the file goes to storage (Supabase S3 in production), then the INSERT
+            b = UploadBatch.objects.create(merchant=self.merchant(), dataset_type=kind, file=f,
+                                           original_filename=f.name, uploaded_by=request.user)
+        t.set(batch_id=b.pk, merchant_id=b.merchant_id)
         try:
-            raw = read_file(b.file)
+            raw = read_file(b.file, timer=t)
         except Exception as e:
             b.status = UploadBatch.Status.FAILED
             b.save(update_fields=["status"])
             raise ValidationError({"file": f"Could not read the file: {e}"})
         spec = SPECS[kind]
-        b.column_mapping = suggest_mapping(raw.columns, spec)
-        b.save(update_fields=["column_mapping"])
+        with t.step("mapping"):
+            b.column_mapping = suggest_mapping(raw.columns, spec)
+            b.save(update_fields=["column_mapping"])
         return Response({
             **summary(b),
             "rows": len(raw),
@@ -74,17 +85,23 @@ class ValidateView(MerchantAPIView):
     parser_classes = [JSONParser]
 
     def post(self, request, pk):
-        b = self.batch(pk)
-        if b.status == UploadBatch.Status.LOADED:
-            raise ValidationError("This upload is already loaded.")
-        mapping = {**b.column_mapping, **(request.data.get("mapping") or {})}
-        try:
-            _, report = run_validation(read_file(b.file), b.dataset_type, mapping, b.merchant)
-        except MappingError as e:
-            raise ValidationError({"mapping": str(e)})
-        b.column_mapping, b.quality_report, b.status = mapping, report, UploadBatch.Status.VALIDATED
-        b.save()
-        return Response(summary(b))
+        with RequestTimer("validate", batch_id=pk) as t:
+            b = self.batch(pk)
+            t.set(dataset_type=b.dataset_type, merchant_id=b.merchant_id)
+            if b.status == UploadBatch.Status.LOADED:
+                raise ValidationError("This upload is already loaded.")
+            mapping = {**b.column_mapping, **(request.data.get("mapping") or {})}
+            try:
+                raw = read_file(b.file, timer=t)
+                with t.step("validate"):
+                    _, report = run_validation(raw, b.dataset_type, mapping, b.merchant)
+            except MappingError as e:
+                raise ValidationError({"mapping": str(e)})
+            b.column_mapping, b.quality_report, b.status = mapping, report, UploadBatch.Status.VALIDATED
+            with t.step("save"):
+                b.save()
+            t.set(valid_rows=report.get("valid_rows"))
+            return Response(summary(b))
 
 
 class UploadDetailView(MerchantAPIView):
@@ -123,19 +140,32 @@ class CommitView(MerchantAPIView):
     transaction, so the new file takes their place instead of being added to them."""
 
     def post(self, request, pk):
-        b = self.batch(pk)
-        if b.status != UploadBatch.Status.VALIDATED:
-            raise ValidationError("Validate this upload before committing it.")
-        clean, report = run_validation(read_file(b.file), b.dataset_type, b.column_mapping, b.merchant)
-        if clean.empty:
-            raise ValidationError("No valid rows to load.")
-        replace = request.data.get("replace") is True
-        with transaction.atomic():
-            if replace:
-                clear(b.merchant, [b.dataset_type], rebuild=False, keep=b.id)
-            b.load_result = LOADERS[b.dataset_type](clean, b.merchant)
-            b.quality_report, b.status = report, UploadBatch.Status.LOADED
-            b.save()
-            ledger = rebuild_ledger(b.merchant)
-            audit = run_audit(b.merchant)
-        return Response({**summary(b), "ledger": ledger, "audit": audit})
+        with RequestTimer("commit", batch_id=pk) as t:
+            b = self.batch(pk)
+            t.set(dataset_type=b.dataset_type, merchant_id=b.merchant_id)
+            if b.status != UploadBatch.Status.VALIDATED:
+                raise ValidationError("Validate this upload before committing it.")
+            raw = read_file(b.file, timer=t)
+            with t.step("validate"):
+                clean, report = run_validation(raw, b.dataset_type, b.column_mapping, b.merchant)
+            t.set(valid_rows=len(clean))
+            if clean.empty:
+                raise ValidationError("No valid rows to load.")
+            replace = request.data.get("replace") is True
+            t.set(replace=replace)
+            with t.step("transaction"):  # every step below plus the COMMIT
+                with transaction.atomic():
+                    if replace:
+                        with t.step("clear"):
+                            clear(b.merchant, [b.dataset_type], rebuild=False, keep=b.id)
+                    with t.step("load"):  # inserting the rows
+                        b.load_result = LOADERS[b.dataset_type](clean, b.merchant)
+                    b.quality_report, b.status = report, UploadBatch.Status.LOADED
+                    with t.step("save"):
+                        b.save()
+                    with t.step("rebuild_ledger"):
+                        ledger = rebuild_ledger(b.merchant)
+                    with t.step("run_audit"):
+                        audit = run_audit(b.merchant)
+            t.set(ledger_rows=ledger.get("rows"), findings=audit.get("findings"))
+            return Response({**summary(b), "ledger": ledger, "audit": audit})

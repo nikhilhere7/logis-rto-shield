@@ -140,7 +140,8 @@ def test_stored_files_are_deleted_only_once_the_removal_has_committed(files_in_t
     with django_capture_on_commit_callbacks(execute=False) as pending:
         assert c.post("/api/ingestion/data/remove/", {"kinds": "all", "confirm": "remove"}, format="json").status_code == 200
         assert all(f.storage.exists(f.name) for f in files)  # rows are gone, files are still there until the commit
-    assert len(pending) == len(files)
+    # the removal also schedules other after-commit work (renewing the data generation for caches)
+    assert len([cb for cb in pending if "delete_file_after_commit" in cb.__qualname__]) == len(files)
     for callback in pending:
         callback()
     assert not any(f.storage.exists(f.name) for f in files)

@@ -2,10 +2,11 @@
 Everything is worked out from the ledger, so there is no new table to keep in step."""
 import numpy as np
 import pandas as pd
+from django.core.cache import cache
 from django.db.models import Count, Max, Q
 
 from core.models import Customer, Order
-from ledger.build import frame
+from ledger.build import data_generation, frame
 from ledger.models import ShipmentLedger
 from ml.score import repeat_returner
 
@@ -57,7 +58,43 @@ def segment_of(parcels, returned):
         index=parcels.index)
 
 
+CACHE_SECONDS = 10 * 60  # safety net for edits made outside the app (Django admin, a shell); see customer_table
+
+
+def _data_version(merchant):
+    """Changes whenever the rows behind the customer table change.
+
+    The main signal is the merchant's data generation (ledger.build.data_generation), renewed by every
+    rebuild_ledger(). Every upload and every removal calls rebuild_ledger(), and it also catches updates made
+    in place: an orders re-upload updates existing Order and Customer rows without changing their ids or
+    counts, which counts and newest ids alone would miss. The counts and newest ids are added as a second,
+    independent check that catches rows added or deleted by code that does not rebuild the ledger
+    (load_sample). Three small queries, far cheaper than rebuilding the table."""
+    led = ShipmentLedger.objects.for_merchant(merchant).aggregate(n=Count("id"), top=Max("id"))
+    orders = Order.objects.for_merchant(merchant).aggregate(n=Count("id"), top=Max("id"))
+    people = Customer.objects.for_merchant(merchant).aggregate(n=Count("id"), top=Max("id"))
+    return (data_generation(merchant), led["n"], led["top"], orders["n"], orders["top"], people["n"], people["top"])
+
+
 def customer_table(merchant):
+    """The table below, kept in memory until the merchant's data changes.
+
+    Building it takes several seconds on a small server, and the Customers page asks for it on every
+    click (segment, sort, search, next page). One entry per merchant, stored with the data version it was
+    built from; a different version means it is rebuilt, so an upload or a removal shows on the very next
+    request. An edit made outside the app without rebuilding the ledger (Django admin) is only picked up
+    when the entry expires, after CACHE_SECONDS."""
+    key = f"customer_table:{merchant.pk}"
+    version = _data_version(merchant)  # read before building, so a change made during the build is never hidden
+    hit = cache.get(key)
+    if hit is not None and hit[0] == version:
+        return hit[1].copy()  # callers sort and filter it; they must never change the cached table
+    table = _build_customer_table(merchant)
+    cache.set(key, (version, table), timeout=CACHE_SECONDS)
+    return table.copy()
+
+
+def _build_customer_table(merchant):
     """One row per customer who has placed an order. Cancelled orders count as orders; parcels are
     ledger rows that were delivered or returned (lost parcels are left out, as in M5)."""
     orders = frame(Order.objects.for_merchant(merchant).values("customer_id").annotate(

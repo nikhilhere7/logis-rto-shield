@@ -8,6 +8,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.models import Order, Shipment
+from core.perf import maybe_step
 
 from .schemas import SPECS
 
@@ -258,23 +259,33 @@ RULES = {
 }
 
 
-def read_file(source):
+def read_file(source, timer=None):
     """Read an uploaded CSV or Excel file into a DataFrame of strings.
 
     `source` is a path (str or os.PathLike) or a stored file (an upload's FileField). A stored file is opened
     through Django's storage, so it works the same whether the file is on local disk or in Supabase Storage;
-    its type comes from its name, never from .path, which remote storage does not have."""
+    its type comes from its name, never from .path, which remote storage does not have.
+    `timer` (a core.perf.RequestTimer, optional) records the download and parse times and the file size."""
     if isinstance(source, (str, os.PathLike)):
         name = str(source)
     else:
         name = str(source.name)
-        with source.open("rb") as f:   # closed on leaving the block, even if reading fails
-            source = io.BytesIO(f.read())
-    if name.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(source, dtype=str, keep_default_na=False)
-    return pd.read_csv(
-        source, dtype=str, keep_default_na=False, encoding_errors="replace"
-    )
+        with maybe_step(timer, "download"):
+            with source.open("rb") as f:   # closed on leaving the block, even if reading fails
+                data = f.read()
+        if timer is not None:
+            timer.set(file_bytes=len(data))
+        source = io.BytesIO(data)
+    with maybe_step(timer, "parse"):
+        if name.lower().endswith((".xlsx", ".xls")):
+            raw = pd.read_excel(source, dtype=str, keep_default_na=False)
+        else:
+            raw = pd.read_csv(
+                source, dtype=str, keep_default_na=False, encoding_errors="replace"
+            )
+    if timer is not None:
+        timer.set(rows=len(raw))
+    return raw
 
 
 def run_validation(raw, dataset_type, mapping, merchant):

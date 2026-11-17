@@ -1,8 +1,10 @@
+import uuid
 from decimal import Decimal
 from math import ceil
 
 import numpy as np
 import pandas as pd
+from django.core.cache import cache
 from django.db import transaction
 
 from core.models import CodRemittance, InvoiceLine, Order, PincodeZone, Shipment
@@ -24,9 +26,35 @@ def none_if_nan(x):
     return None if pd.isna(x) else x
 
 
+def _generation_key(merchant):
+    return f"data_generation:{merchant.pk}"
+
+
+def data_generation(merchant):
+    """A random token that changes whenever this merchant's data is rewritten, for caches built from it
+    (customers.profiles.customer_table). Random rather than a counter, so a token lost from the cache can
+    never come back with a value an older cached entry was stored under."""
+    key = _generation_key(merchant)
+    token = cache.get(key)
+    if token is None:
+        cache.add(key, uuid.uuid4().hex, timeout=None)  # add: two threads starting at once agree on one token
+        token = cache.get(key)
+    return token
+
+
+def mark_data_changed(merchant):
+    """Renew the token now, for reads inside this transaction, and again once the transaction has committed:
+    a cache filled in between from the not-yet-committed (old) rows is then thrown away too."""
+    key = _generation_key(merchant)
+    cache.set(key, uuid.uuid4().hex, timeout=None)
+    transaction.on_commit(lambda: cache.set(key, uuid.uuid4().hex, timeout=None))
+
+
 @transaction.atomic
 def rebuild_ledger(merchant):
-    """Delete and rewrite this merchant's ledger: one row per shipment, never more."""
+    """Delete and rewrite this merchant's ledger: one row per shipment, never more.
+    Every upload and every removal ends here, so this is where caches of the merchant's data are told."""
+    mark_data_changed(merchant)
     ShipmentLedger.objects.for_merchant(merchant).delete()
 
     # A. shipments
