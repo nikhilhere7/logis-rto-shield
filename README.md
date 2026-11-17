@@ -180,12 +180,6 @@ The app opens at http://localhost:5174. Sign up, then upload your files on the U
 
 The sample data files are not in this repository, because no merchant data goes into Git. The live demo uses them.
 
-## Limits
-
-- The sample store is synthetic. The patterns are realistic, but the model has not been tested on a real seller's data.
-- The model is trained per seller and needs a few thousand finished parcels before it is used. Until then, orders are scored by fixed rules, and the app says so.
-- Reports cover all uploaded data. There is no date-range filter yet.
-- On the free hosting plans, the API sleeps after 15 minutes without traffic and takes about a minute to wake.
 
 ## Author
 
